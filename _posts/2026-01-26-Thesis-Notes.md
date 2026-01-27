@@ -16,7 +16,7 @@ title: "Thesis Notes"
   }
 </style>
 
-### Boot
+# Boot
 
  - initramfs (**init**ial **RAM** **f**ile**s**ystem) - temporary filesystem (tmpfs, in-memory) that the linux kernel loads into RAM on boot.
 
@@ -28,9 +28,9 @@ initrd was the ancestor of initramfs. It used to be an actual filesystem image (
 
  - RAID (Redundant Array of Independent Disks) - array of independent physical drives as a single logical unit.
  
-### Memory Managements and Filesystems 
+# Memory Managements and Filesystems 
 
-#### Physical and Virtual memory
+## Physical and Virtual memory
 
 Physical memory is:  
     - a limited resource  
@@ -76,7 +76,7 @@ mmap(NULL, 180840, PROT_READ, MAP_PRIVATE, 3, 0) = 0x7f9ab51e1000
 
 The kernel code is also mapped into the process' Virtual Address Space to avoid context-switching overhead (we have plenty of space in the VAS anyway). So the VAS is split into two sections: User VAS and Kernel VAS. 
 
-#### File-backed vs Anonymous Memory  
+## File-backed vs Anonymous Memory  
 If there is no file on-disk backing this memory (e.g. program stack, heap). It can also be explicitly allocated using mmap.
 
 We'll take a deeper look at reclamation for file-backed memory later on this page.  
@@ -85,11 +85,11 @@ We'll take a deeper look at reclamation for file-backed memory later on this pag
 
 - In-Memory filesystems: Sometimes anon memory can present a file-like interface. shm and tmpfs are two “in-memory” filesystems (i.e. they are not actually files stored on disk - these deal exclusively with anon memory - but a file-like interface is provided to anon mem too because it’s super clean and easy)
 
-#### Buffered vs Memory-Mapped I/O  
+## Buffered vs Memory-Mapped I/O  
 In buffered I/O, when a user application wants data, it makes a syscall and the context switches from User to Kernel mode. The VFS checks if the requested pages are present in the page cache - if not, it fetches them from disk and puts them into the page cache. Then this data is copied to the user buffer.  
 In memory-mapped I/O a file (in the memory, basically the page cache) is mapped directly into the process' virtual address space. Once mapped, accessing this memory IS accessing the file. The copying to user-buffer part is skipped.
 
-#### Representing Pages
+## Representing Pages
 
 Physical memory is divided into page frames. The size of a page frame is arch-specific (sometimes the size can be selected during kernel build - most commonly 4096B). The page frame number or pfn uniquely represents every physical page frame - it is the physical address of the frame divided by PAGE_SIZE. 
 
@@ -110,7 +110,7 @@ A folio and a page are different views of the SAME memory. They are like “over
 
 Each physical page in the memory is represented by the **struct page** in the Kernel. The structures for all page frames form an array mem_map[] of type struct page so that you can easily retrieve the structure for a specific page frame by using the page frame number as the index.
 
-#### Linux Filesystem Data Structures
+## Linux Filesystem Data Structures
 
 - Every file in a filesystem in the Linux Kernel, is uniquely represented by an **inode**.  
 - Each inode has an associated **address_space** ("represents the contents of a cacheable, mappable object"). The inode is the "owner" of the address_space - the struct is allocated as part of the inode's memory.    
@@ -118,12 +118,12 @@ The file will contain multiple pages / folios, and each of these will have a poi
 - A **struct file** represents an OPEN file. It is the kernel-side implementation of the file descriptor within a process. A single inode can have multiple associated struct file (the same file may be opened by multiple processes, or the same process may open the file multiple times).  
 - The **struct dentry** is an in-memory data structure that represents a component of a file path. It’s what links inodes and filenames (inode doesn’t actually contain filenames). And it’s very important for caching for fast lookup by the VFS (the dentry cache). 
 
-#### Linux Memory Management Data Structures
+## Linux Memory Management Data Structures
 
 - struct mm_struct: There's one unique mm_struct for each Virtual Address Space. It's a descriptor of the memory for this VAS. It has the mm_mt which is a tree of all the Virtual Memory Areas (contiguous ranges in the virtual address spaces) for this VAS. It also has a pointer to the root of the multi-level page tables.
 - struct vm_area_struct: Represents one contiguous area in virtual memory.
 
-#### The Page Cache
+## The Page Cache
 - The struct address_space contains:  
 > struct xarray		i_pages;
 This is the actual Linux page cache.  
@@ -135,7 +135,7 @@ An xarray is essentially a sparse array of pointers (internal implementation is 
 A note on the confusion about the word "cache":  
 In hardware, "cache" is faster, more expensive memory between the processor and main memory. In the Kernel, the "page cache" simply refers to pages that have been fetched from disk into the main memory. The Linux page cache is per-file: each file has an associated "page cache" - the i_pages xarray is the data structure representing it (it stores pointers to the locations of the file's pages, that have been fetched into the main memory).
 
-#### Following the read syscall
+## Following the read syscall
  
 In Linux, filesystem related syscalls (like read) are implemented by each type of filesystem on its own. This is all abstracted by the VFS layer.
 
