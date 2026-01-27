@@ -1,7 +1,6 @@
 ---
-layout: post
+layout: page
 title: "Thesis Notes"
-date: 2026-01-26
 ---
 
 # Observations from Setup
@@ -25,11 +24,11 @@ initrd was the ancestor of initramfs. It used to be an actual filesystem image (
  - physical and virtual memory
 
 Physical memory is:
-	- a limited resource 
-	- not necessarily contiguous (is accessible as a set of distinct address ranges)
-	- different architectures (and even different implementations of the same architecture) may define these address ranges differently
-	- RAM is small and limited. It’s also “random access” (the processor can access all memory locations in the RAM equally fast).  So there’s a bunch of processes all vying for a slice of this RAM. That makes things complicated from the process POV. If it has to constantly track exactly which physical RAM addresses it has access to, which are free, and you have to make sure no processes overwrite each other’s locations and stuff…
-	TL/DR: dealing with physical memory directly is complex.
+    - a limited resource  
+	- not necessarily contiguous (is accessible as a set of distinct address ranges)  
+	- different architectures (and even different implementations of the same architecture) may define these address ranges differently  
+	- RAM is small and limited. It’s also “random access” (the processor can access all memory locations in the RAM equally fast).  So there’s a bunch of processes all vying for a slice of this RAM. That makes things complicated from the process POV. If it has to constantly track exactly which physical RAM addresses it has access to, which are free, and you have to make sure no processes overwrite each other’s locations and stuff…  
+	TL/DR: dealing with physical memory directly is complex.  
 	So we offload all that to the kernel, via virtual memory.
 
 Virtual memory is an abstraction of physical memory, that all applications see.
@@ -37,7 +36,7 @@ They use virtual addresses that are translated to physical addresses.
 
 Every process gets its own private virtual address space.
 
-![Process Virtual Address Space](../images/virtual_address_space.png)
+![Process Virtual Address Space]({{https://blooberry-muffin.github.io/}}/images/virtual_address_space.png)
 
 Each process lives in a sandbox, believing it has complete, unrestricted access to all addresses from 0x0 - 0xffffffffffffffff (all possible addressable memory). Processes aren't even aware of, and cannot access, the virtual address space of another process.
 
