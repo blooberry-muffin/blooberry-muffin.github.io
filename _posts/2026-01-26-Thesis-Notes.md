@@ -1,9 +1,8 @@
 ---
-layout: page
+layout: post
+hide_sidebar: true
 title: "Thesis Notes"
 ---
-
-# Observations from Setup
 
 I needed to compile the kernel for an x86 system, but I use an ARM-based Mac.
 
