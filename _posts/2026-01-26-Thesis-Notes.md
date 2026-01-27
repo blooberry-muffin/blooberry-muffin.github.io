@@ -39,11 +39,37 @@ Every process gets its own private virtual address space.
 
 ![Process Virtual Address Space](../images/virtual_address_space.png)
 
-Each process lives in a sandbox, believing it has complete, unrestricted access to all addresses from 0x0 - 0xffffffffffffffff. Processes aren't even aware of, and cannot access, the virtual address space of another process.
+Each process lives in a sandbox, believing it has complete, unrestricted access to all addresses from 0x0 - 0xffffffffffffffff (all possible addressable memory). Processes aren't even aware of, and cannot access, the virtual address space of another process.
 
 So processes and their programmers don't have to worry about low-level memory stuff, they interact with this Virtual Address Space and the kernel handles the rest.
 
 Note: There's some confusion between how "virtual memory" sometimes refers to the concept of secondary memory devices such as SSD being seen as a part of the "main memory" by the kernel. 
 So: the kernel CAN map virtual addresses to the disk. Less important, less used data can be mapped to slow disk rather that precious, scarce RAM. This is a PART of the virtual memory concept, but the MAIN thing is the abstraction of physical memory for processes. 
+
+For example, if during a running process you see this via strace:
+
+mmap(NULL, 180840, PROT_READ, MAP_PRIVATE, 3, 0) = 0x7f9ab51e1000
+
+> mmap: syscall to map a file into a process’ virtual memory space
+
+> arg1: address to map to, if NULL, kernel can choose it
+
+> arg2: length in bytes to map
+
+> arg3: desired memory protection, to decide permissions and stuff
+
+> arg4: flags, stuff about how these mappings are (shared / private) for other processes mapping to this region
+
+> arg5: file descriptor, here it is “3” because a previous syscall assigned that file to “3”
+
+> arg6: offset in file
+
+> 0x7f9ab51e1000 - this is the address the kernel selected in the VAS (because 1st arg was NULL)
+
+The kernel code is also mapped into the process' Virtual Address Space to avoid context-switching overhead (we have plenty of space in the VAS anyway). So the VAS is split into two sections: User VAS and Kernel VAS.
+
+
+
+
 
 
