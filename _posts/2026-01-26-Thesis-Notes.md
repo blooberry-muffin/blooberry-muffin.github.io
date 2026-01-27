@@ -16,7 +16,7 @@ title: "Thesis Notes"
   }
 </style>
 
-#### Boot
+### Boot
 
  - initramfs (**init**ial **RAM** **f**ile**s**ystem) - temporary filesystem (tmpfs, in-memory) that the linux kernel loads into RAM on boot.
 
@@ -28,9 +28,9 @@ initrd was the ancestor of initramfs. It used to be an actual filesystem image (
 
  - RAID (Redundant Array of Independent Disks) - array of independent physical drives as a single logical unit.
  
-#### Memory Managements and Filesystems 
+### Memory Managements and Filesystems 
 
-##### Physical and Virtual memory
+#### Physical and Virtual memory
 
 Physical memory is:  
     - a limited resource  
@@ -76,7 +76,7 @@ mmap(NULL, 180840, PROT_READ, MAP_PRIVATE, 3, 0) = 0x7f9ab51e1000
 
 The kernel code is also mapped into the process' Virtual Address Space to avoid context-switching overhead (we have plenty of space in the VAS anyway). So the VAS is split into two sections: User VAS and Kernel VAS. 
 
-##### File-backed vs Anonymous Memory  
+#### File-backed vs Anonymous Memory  
 If there is no file on-disk backing this memory (e.g. program stack, heap). It can also be explicitly allocated using mmap.
 
 We'll take a deeper look at reclamation for file-backed memory later on this page.  
@@ -85,11 +85,11 @@ We'll take a deeper look at reclamation for file-backed memory later on this pag
 
 - In-Memory filesystems: Sometimes anon memory can present a file-like interface. shm and tmpfs are two “in-memory” filesystems (i.e. they are not actually files stored on disk - these deal exclusively with anon memory - but a file-like interface is provided to anon mem too because it’s super clean and easy)
 
-##### Buffered vs Memory-Mapped I/O  
+#### Buffered vs Memory-Mapped I/O  
 In buffered I/O, when a user application wants data, it makes a syscall and the context switches from User to Kernel mode. The VFS checks if the requested pages are present in the page cache - if not, it fetches them from disk and puts them into the page cache. Then this data is copied to the user buffer.  
 In memory-mapped I/O a file (in the memory, basically the page cache) is mapped directly into the process' virtual address space. Once mapped, accessing this memory IS accessing the file. The copying to user-buffer part is skipped.
 
-##### Representing Pages
+#### Representing Pages
 
 Physical memory is divided into page frames. The size of a page frame is arch-specific (sometimes the size can be selected during kernel build - most commonly 4096B). The page frame number or pfn uniquely represents every physical page frame - it is the physical address of the frame divided by PAGE_SIZE. 
 
@@ -123,7 +123,7 @@ The file will contain multiple pages / folios, and each of these will have a poi
 - struct mm_struct: There's one unique mm_struct for each Virtual Address Space. It's a descriptor of the memory for this VAS. It has the mm_mt which is a tree of all the Virtual Memory Areas (contiguous ranges in the virtual address spaces) for this VAS. It also has a pointer to the root of the multi-level page tables.
 - struct vm_area_struct: Represents one contiguous area in virtual memory.
 
-##### The Page Cache
+#### The Page Cache
 - The struct address_space contains:  
 > struct xarray		i_pages;
 This is the actual Linux page cache.  
