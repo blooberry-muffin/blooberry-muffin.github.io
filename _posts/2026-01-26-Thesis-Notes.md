@@ -1,20 +1,79 @@
 ---
 layout: post
-hide_sidebar: true
 title: "Thesis Notes"
 ---
 <style>
-  .sidebar, .site-sidebar, .secondary, aside { 
-    display: none !important; 
+  /* 1. Expand the main wrapper to use the full screen width */
+  .wrapper {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: block !important;
   }
 
-  .main, .content, .post, .wrapper { 
-    max-width: 100% !important; 
-    margin-left: 0 !important; 
-    margin-right: 0 !important; 
-    padding: 20px !important;
+  /* 2. Expand the main content area (the <section> tag in this theme) */
+  section {
+    width: auto !important;
+    float: none !important;
+    margin: 0 40px !important; /* Adjust this for left/right breathing room */
+    padding-top: 60px !important; /* Leaves room at the top for the menu button */
+  }
+
+  /* 3. Convert the theme's header into a sliding off-canvas menu */
+  header {
+    position: fixed !important;
+    top: 0 !important;
+    left: -320px !important; /* Hides it off-screen to the left */
+    width: 300px !important;
+    height: 100vh !important;
+    background-color: #f6f8fa !important; /* Light GitHub-style gray */
+    box-shadow: 2px 0 5px rgba(0,0,0,0.1) !important;
+    transition: left 0.3s ease !important;
+    z-index: 9998 !important;
+    overflow-y: auto !important;
+    padding: 60px 20px 20px 20px !important;
+  }
+
+  /* Class applied via JS to slide the header into view */
+  header.is-open {
+    left: 0 !important;
+  }
+
+  /* 4. Style the toggle button */
+  #custom-sidebar-toggle {
+    position: fixed;
+    top: 15px;
+    left: 15px;
+    z-index: 9999;
+    padding: 8px 12px;
+    background: #24292e;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: bold;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    transition: background 0.2s;
+  }
+  
+  #custom-sidebar-toggle:hover {
+    background: #0366d6; /* GitHub blue on hover */
   }
 </style>
+
+<button id="custom-sidebar-toggle">☰ Menu</button>
+
+<script>
+  document.getElementById('custom-sidebar-toggle').addEventListener('click', function() {
+    // Targets the header tag specifically since that acts as the sidebar in minimal
+    const headerSidebar = document.querySelector('header');
+    if (headerSidebar) {
+      headerSidebar.classList.toggle('is-open');
+    }
+  });
+</script>
 
 # Boot
 
