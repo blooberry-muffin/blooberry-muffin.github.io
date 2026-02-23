@@ -170,12 +170,109 @@ The open() syscall returns an integer between 0 (empty) and N → this is the �
 
 So the sys_read starts by receiving a file descriptor, then vfs_read() gets the struct file * it actually points to. The new_sync_read() function wraps this struct file * + some other stuff into a struct kiocb. From this point onwards this is what gets sent around!
 
-A little note about readahead:  
-“readahead” → system call that loads a file’s contents from disk into page cache. The file is thus “prefetched” - subsequent reads are from RAM, not disk.  
-filemap_get_pages first calls filemap_get_read_batch to actually walk the page cache. If the required pages aren't found there, it sets up raedahead logic.  
-The DEFINE_READAHEAD macro sets up a readahead_control struct.  
-It then calls page_cache_sync_ra, specifying the number of pages requested.  
-After this, filempa_get_read_batch is called again, because if the fetch from disk succeeded, the page cache must be populated with the requested pages now.  
+filemap_get_pages() is the key "entry point" for buffered reads that go through the page cache. The comments below explain what goes on here:
+
+```c
+
+static int filemap_get_pages(struct kiocb *iocb, size_t count,
+       struct folio_batch *fbatch, bool need_uptodate)
+{
+   struct file *filp = iocb->ki_filp;
+   struct address_space *mapping = filp->f_mapping;
+   struct file_ra_state *ra = &filp->f_ra;
+   
+   // "index" to "last index" - these are the page numbers in the file, that we want to read
+   pgoff_t index = iocb->ki_pos >> PAGE_SHIFT;
+   pgoff_t last_index;
+   
+   struct folio *folio, *f;
+   unsigned int flags;
+   int err = 0;
+
+
+   /* "last_index" is the index of the page beyond the end of the read */
+   last_index = DIV_ROUND_UP(iocb->ki_pos + count, PAGE_SIZE);
+retry:
+   if (fatal_signal_pending(current))
+       return -EINTR;
+
+// first, try seeing if these pages are all already in the page cache
+// at the first cache-miss, we return an empty batch
+   filemap_get_read_batch(mapping, index, last_index - 1, fbatch);
+
+// if an empty batch was returned, we know there's a cache miss and try to fetch from disk
+   if (!folio_batch_count(fbatch)) { >> if the batch wasn’t full
+       if (iocb->ki_flags & IOCB_NOIO)
+           return -EAGAIN;
+       if (iocb->ki_flags & IOCB_NOWAIT)
+           flags = memalloc_noio_save();
+
+// This function, through various further function calls, will actually fetch pages from disk into the page cache.
+// It also applies "readahead" logic - we don't just fetch the requested pages, we try to predict if this is a sequential read and pre-fetch the next pages in the file.
+// First, the readahead control struct is set up in page_cache_sync_readahead(), then page_cache_sync_ra() is called. Here,
+// 1. Either "do_forced_ra" is called if, for some reason, we don't actually want to apply readahead logic - it leads to page_cache_ra_unbounded() which allocates new folios via filemap_alloc_folio() and adds them to the page cache via filemap_add_folio().
+// 2. Or, if we do want to read ahead, the appropriate calculations are done (we ensure that atleats the requested pages upto last_index are fetched + a readahead window) and page_cache_ra_order() is called. Ultimately, ra_alloc_folio() is called and this also allocates folios via filemap_alloc_folio() and adds them to the page cache via filemap_add_folio().
+// In both cases, the pages from disk are then fetched into the newly prepared folios.
+ 
+       page_cache_sync_readahead(mapping, ra, filp, index,
+               last_index - index); 
+       if (iocb->ki_flags & IOCB_NOWAIT)
+           memalloc_noio_restore(flags);
+// we expect that the page cache NOW has the pages we wanted - try fetching them from the page cache again
+       filemap_get_read_batch(mapping, index, last_index - 1, fbatch);
+   }
+
+// if the page cache STILL doesn't have the requested pages, we fall back to filemap_create_folio(). 
+// This function allocates exactly one new folio, adds it to cache and fetches it from disk. So, we would return only ONE page to the filemap_read function - which had a loop that fetches all the requested pages batch-by-batch, alling filemap_get_pages as many times as needed. Now we will just fetch one page at a time, but we will ensure that all the requested pages are delivered.
+// We do this because if readahead failed, the most likely reason is memory pressure.
+   if (!folio_batch_count(fbatch)) {
+       if (iocb->ki_flags & (IOCB_NOWAIT | IOCB_WAITQ))
+           return -EAGAIN;
+
+       err = filemap_create_folio(filp, mapping, iocb->ki_pos, fbatch);
+
+       if (err == AOP_TRUNCATED_PAGE)
+           goto retry;
+       return err;
+   }
+   folio = fbatch->folios[folio_batch_count(fbatch) - 1];
+// Here  we check - are we getting close to the end of what we've cached so far? If yes, fire off an asynchronous background request for more data. 
+   if (folio_test_readahead(folio)) {
+       err = filemap_readahead(iocb, filp, mapping, folio, last_index);
+       if (err)
+           goto err;
+   }
+// Is the page we want to read right now currently empty and waiting for the disk? Yes? Put the application to sleep until the disk finishes.
+   if (!folio_test_uptodate(folio)) {
+       if ((iocb->ki_flags & IOCB_WAITQ) &&
+           folio_batch_count(fbatch) > 1)
+           iocb->ki_flags |= IOCB_NOWAIT;
+       err = filemap_update_page(iocb, mapping, count, folio,
+                     need_uptodate);
+       if (err)
+           goto err;
+   }
+
+// And this below is where PaCaR steps in, to intercept all the pages in the batch and verify if the reads are local!
+   int nid = numa_node_id();
+   for (int i = 0; i < folio_batch_count(fbatch); i++) {
+       // replace the recently added folio to the fbatch
+       f = fbatch->folios[i];
+       fbatch->folios[i] = duplication_find_or_duplicate(f, nid);
+   }
+   trace_mm_filemap_get_pages(mapping, index, last_index - 1);
+   return 0;
+err:
+   if (err < 0)
+       folio_put(folio);
+   if (likely(--fbatch->nr))
+       return 0;
+   if (err == AOP_TRUNCATED_PAGE)
+       goto retry;
+   return err;
+}
+
+```
 
 
 
