@@ -3,7 +3,6 @@ layout: post
 title: "Thesis Notes"
 ---
 <style>
-  /* 1. Expand the main wrapper to use the full screen width */
   .wrapper {
     width: 100% !important;
     max-width: 100% !important;
@@ -12,7 +11,6 @@ title: "Thesis Notes"
     display: block !important;
   }
 
-  /* 2. Expand the main content area (the <section> tag in this theme) */
   section {
     width: auto !important;
     float: none !important;
@@ -20,7 +18,6 @@ title: "Thesis Notes"
     padding-top: 60px !important; /* Leaves room at the top for the menu button */
   }
 
-  /* 3. Convert the theme's header into a sliding off-canvas menu */
   header {
     position: fixed !important;
     top: 0 !important;
@@ -35,12 +32,10 @@ title: "Thesis Notes"
     padding: 60px 20px 20px 20px !important;
   }
 
-  /* Class applied via JS to slide the header into view */
   header.is-open {
     left: 0 !important;
   }
 
-  /* 4. Style the toggle button */
   #custom-sidebar-toggle {
     position: fixed;
     top: 15px;
@@ -59,7 +54,7 @@ title: "Thesis Notes"
   }
   
   #custom-sidebar-toggle:hover {
-    background: #0366d6; /* GitHub blue on hover */
+    background: #0366d6;
   }
 </style>
 
@@ -87,7 +82,7 @@ initrd was the ancestor of initramfs. It used to be an actual filesystem image (
 
  - RAID (Redundant Array of Independent Disks) - array of independent physical drives as a single logical unit.
  
-# Memory Managements and Filesystems 
+# Memory Management and Filesystems 
 
 ## Physical and Virtual memory
 
@@ -145,8 +140,11 @@ We'll take a deeper look at reclamation for file-backed memory later on this pag
 - In-Memory filesystems: Sometimes anon memory can present a file-like interface. shm and tmpfs are two “in-memory” filesystems (i.e. they are not actually files stored on disk - these deal exclusively with anon memory - but a file-like interface is provided to anon mem too because it’s super clean and easy)
 
 ## Buffered vs Memory-Mapped I/O  
-In buffered I/O, when a user application wants data, it makes a syscall and the context switches from User to Kernel mode. The VFS checks if the requested pages are present in the page cache - if not, it fetches them from disk and puts them into the page cache. Then this data is copied to the user buffer.  
+In buffered I/O, when a user application wants data, it makes a syscall and the context switches from User to Kernel mode. The VFS checks if the requested pages are present in the page cache - if not, it fetches them from disk and puts them into the page cache. Then this data is copied to the user buffer.
+
 In memory-mapped I/O a file (in the memory, basically the page cache) is mapped directly into the process' virtual address space. Once mapped, accessing this memory IS accessing the file. The copying to user-buffer part is skipped.
+
+- Direct I/O: Skips the page cache entirely. Data transfer happens directly between the userspace buffer and the storage device. open() with the O_DIRECT flag triggers this.
 
 ## Representing Pages
 
@@ -175,7 +173,13 @@ Each physical page in the memory is represented by the **struct page** in the Ke
 - Each inode has an associated **address_space** ("represents the contents of a cacheable, mappable object"). The inode is the "owner" of the address_space - the struct is allocated as part of the inode's memory.    
 The file will contain multiple pages / folios, and each of these will have a pointer back to this struct address_space.  
 - A **struct file** represents an OPEN file. It is the kernel-side implementation of the file descriptor within a process. A single inode can have multiple associated struct file (the same file may be opened by multiple processes, or the same process may open the file multiple times).  
-- The **struct dentry** is an in-memory data structure that represents a component of a file path. It’s what links inodes and filenames (inode doesn’t actually contain filenames). And it’s very important for caching for fast lookup by the VFS (the dentry cache). 
+- The **struct dentry** is an in-memory data structure that represents a component of a file path. It’s what links inodes and filenames (inode doesn’t actually contain filenames). And it’s very important for caching for fast lookup by the VFS (the dentry cache).  
+
+Note: The struct inode has both an address_space and a pointer to it.
+> struct address_space	i_data;
+> struct address_space	*i_mapping;
+Usually, the i_mapping points to the i_data. In specific cases such as block device files, they can be different (where a "master" inode owns the actual struct and the other inodes point to that i_data through their own i_mapping pointers).
+
 
 ## Linux Memory Management Data Structures
 
@@ -333,10 +337,7 @@ err:
 
 ```
 
-
-
-
-
-
-
-
+#### General
+- Pointers in C have a type so they can be directly dereferenced (the compiler knows what they point to). Void pointers can point to anything, but to be dereferenced, must be cast to something.
+- cgroups: we can define groups of tasks (processes) and then allocate resources such as memory, CPU time, network bandwidth to these groups
+- Fun fact: C structs can't have private members, so you must resort to programmer-enforced privacy. For e.g. in the struct readahead_control.
