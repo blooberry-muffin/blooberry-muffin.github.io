@@ -264,7 +264,7 @@ retry:
    filemap_get_read_batch(mapping, index, last_index - 1, fbatch);
 
 // if an empty batch was returned, we know there's a cache miss and try to fetch from disk
-   if (!folio_batch_count(fbatch)) { >> if the batch wasn’t full
+   if (!folio_batch_count(fbatch)) { // if the batch wasn’t full
        if (iocb->ki_flags & IOCB_NOIO)
            return -EAGAIN;
        if (iocb->ki_flags & IOCB_NOWAIT)
@@ -274,7 +274,7 @@ retry:
 // It also applies "readahead" logic - we don't just fetch the requested pages, we try to predict if this is a sequential read and pre-fetch the next pages in the file.
 // First, the readahead control struct is set up in page_cache_sync_readahead(), then page_cache_sync_ra() is called. Here,
 // 1. Either "do_forced_ra" is called if, for some reason, we don't actually want to apply readahead logic - it leads to page_cache_ra_unbounded() which allocates new folios via filemap_alloc_folio() and adds them to the page cache via filemap_add_folio().
-// 2. Or, if we do want to read ahead, the appropriate calculations are done (we ensure that atleats the requested pages upto last_index are fetched + a readahead window) and page_cache_ra_order() is called. Ultimately, ra_alloc_folio() is called and this also allocates folios via filemap_alloc_folio() and adds them to the page cache via filemap_add_folio().
+// 2. Or, if we do want to read ahead, the appropriate calculations are done (we ensure that atleast the requested pages upto last_index are fetched + a readahead window) and page_cache_ra_order() is called. Ultimately, ra_alloc_folio() is called and this also allocates folios via filemap_alloc_folio() and adds them to the page cache via filemap_add_folio().
 // In both cases, the pages from disk are then fetched into the newly prepared folios.
  
        page_cache_sync_readahead(mapping, ra, filp, index,
@@ -333,6 +333,225 @@ err:
    if (err == AOP_TRUNCATED_PAGE)
        goto retry;
    return err;
+}
+
+```
+
+
+### Appendix 
+
+Some closer looks at specific functions. 
+
+The struct readahaed_control provides a good idea of what readahead does. The DEFINE_READAHEAD macro sets it up:
+
+```c
+
+struct readahead_control {
+    struct file *file; // the open file whose data is being read ahead
+    struct address_space *mapping; // this file’s address_space
+    struct file_ra_state *ra; //the “readahead state”
+/* private: use the readahead_* accessors instead */
+// fun fact: this privacy is not enforced by C itself, but through this comment!
+    pgoff_t _index; // current page index in the readahead
+    unsigned int _nr_pages; // how many pages to read ahead? 
+    unsigned int _batch_count;
+    bool dropbehind;
+    bool _workingset;
+    unsigned long _pflags;
+};
+
+```
+
+And a closer look at page_cache_sync_ra, to better understand the "forced readahead" vs the normal readahead case:
+
+```c
+void page_cache_sync_ra(struct readahead_control *ractl,
+        unsigned long req_count)
+{
+    pgoff_t index = readahead_index(ractl); // this is the “first” page index
+    // if we access the file RANDOMLY, then of course we don't predict and use sequential read patterns
+    bool do_forced_ra = ractl->file && (ractl->file->f_mode & FMODE_RANDOM); 
+    struct file_ra_state *ra = ractl->ra;
+    unsigned long max_pages, contig_count;
+    pgoff_t prev_index, miss;
+
+    /*
+     * Even if readahead is disabled, issue this request as readahead
+     * as we'll need it to satisfy the requested range. The forced
+     * readahead will do the right thing and limit the read to just the
+     * requested range, which we'll set to 1 page for this case.
+     */
+    // is readahead disabled? Or is the device busy? We then fetch only the one page the user requested.
+    if (!ra->ra_pages || blk_cgroup_congested()) {
+        if (!ractl->file)
+            return;
+        req_count = 1;
+        do_forced_ra = true;
+    }
+
+    /* be dumb */
+    // no fancy prediction tricks - just fetch exactly what the user asked for
+    if (do_forced_ra) {
+        force_page_cache_ra(ractl, req_count);
+        return;
+    }
+    // actual number of pages to prefetch based on system limits, readahead window etc
+    max_pages = ractl_max_pages(ractl, req_count);
+    // the page number at which the previous read ended
+    prev_index = (unsigned long long)ra->prev_pos >> PAGE_SHIFT;
+
+    /*
+     * A start of file, oversized read, or sequential cache miss:
+     * trivial case: (index - prev_index) == 1
+     * unaligned reads: (index - prev_index) == 0
+     */
+    
+    // index = 0 --> start of file 
+    // req_count > max_pages --> oversized read
+    // index - prev_index <= 1UL --> sequential read, but we are here so there must have been a cache miss.
+    // in all these casesL new readahead window
+    if (!index || req_count > max_pages || index - prev_index <= 1UL) {
+        // set the start of readahead window as the current index
+        ra->start = index;
+      // set the size of the readahead window
+      // small reads x4, medium reads x2, large reads capped at max
+        ra->size = get_init_ra_size(req_count, max_pages);
+      // how many pages to fetch asynchronously?
+        ra->async_size = ra->size > req_count ? ra->size - req_count :
+                            ra->size >> 1;
+        goto readit;
+    }
+
+    /*
+     * Query the page cache and look for the traces(cached history pages)
+     * that a sequential stream would leave behind.
+     */
+
+     // literally walk backward from the current index, in the i_pages, find the first "hole"
+     // this is used to estimate sequential read
+    rcu_read_lock();
+    miss = page_cache_prev_miss(ractl->mapping, index - 1, max_pages);
+    rcu_read_unlock();
+    contig_count = index - miss - 1;
+    /*
+     * Standalone, small random read. Read as is, and do not pollute the
+     * readahead state.
+     */
+
+     // if the prev continuous string of pages is shorter than the current request, then it's random-ish
+     // no readahead, then
+    if (contig_count <= req_count) {
+        do_page_cache_ra(ractl, req_count, 0);
+        return;
+    }
+    /*
+     * File cached from the beginning:
+     * it is a strong indication of long-run stream (or whole-file-read)
+     */
+
+     // if we’ve been reading this file from the start → readahead aggressively
+    if (miss == ULONG_MAX)
+        contig_count *= 2;
+    ra->start = index;
+    ra->size = min(contig_count + req_count, max_pages);
+    ra->async_size = 1;
+    // only 1 page fetched async beyond the window
+readit:
+// finally: the actual read!
+    ra->order = 0;
+    ractl->_index = ra->start;
+    page_cache_ra_order(ractl, ra);
+}
+EXPORT_SYMBOL_GPL(page_cache_sync_ra);
+
+```
+
+And continuing down the "predict and read" path:
+
+```c
+void page_cache_ra_order(struct readahead_control *ractl,
+        struct file_ra_state *ra)
+{
+    struct address_space *mapping = ractl->mapping;
+    pgoff_t start = readahead_index(ractl);
+    pgoff_t index = start;
+    unsigned int min_order = mapping_min_folio_order(mapping);
+    // get the EOF page index
+    pgoff_t limit = (i_size_read(mapping->host) - 1) >> PAGE_SHIFT;
+    // sets the boundary between sync and async page fetches
+    pgoff_t mark = index + ra->size - ra->async_size;
+    unsigned int nofs;
+    int err = 0;
+    // flags for mem alloc behaviour
+    gfp_t gfp = readahead_gfp_mask(mapping);
+    // how large is each folio we allocate during this fetch?
+    unsigned int new_order = ra->order;
+    // if large folios are disabled, go to fallback “page by page” path
+    if (!mapping_large_folio_support(mapping)) {
+        ra->order = 0;
+        goto fallback;
+    }
+
+    // cap the readahead to EOF!
+    limit = min(limit, index + ra->size - 1);
+
+    // set the correct folio order
+    new_order = min(mapping_max_folio_order(mapping), new_order);
+    new_order = min_t(unsigned int, new_order, ilog2(ra->size));
+    new_order = max(new_order, min_order);
+
+    ra->order = new_order;
+
+    /* See comment in page_cache_ra_unbounded() */
+    // no FS recurse i.e. don’t call FS while I’m in FS code, for eg, for reclaim
+    nofs = memalloc_nofs_save();
+
+    filemap_invalidate_lock_shared(mapping);
+    /*
+     * If the new_order is greater than min_order and index is
+     * already aligned to new_order, then this will be noop as index
+     * aligned to new_order should also be aligned to min_order.
+     */
+    // align the index with folio order
+    ractl->_index = mapping_align_index(mapping, index);
+    index = readahead_index(ractl);
+
+    while (index <= limit) {
+        unsigned int order = new_order;
+
+        /* Align with smaller pages if needed */
+        if (index & ((1UL << order) - 1))
+            order = __ffs(index);
+        /* Don't allocate pages past EOF */
+        while (order > min_order && index + (1UL << order) - 1 > limit)
+            order--;
+        // actually allocating the folios
+        err = ra_alloc_folio(ractl, index, mark, order, gfp);
+        if (err)
+            break;
+        index += 1UL << order;
+    }
+
+    read_pages(ractl);
+    // unlock, restore mem alloc flags
+    filemap_invalidate_unlock_shared(mapping);
+    memalloc_nofs_restore(nofs);
+ 
+    /*
+     * If there were already pages in the page cache, then we may have
+     * left some gaps.  Let the regular readahead code take care of this
+     * situation below.
+     */
+    if (!err)
+        return;
+fallback:
+    /*
+     * ->readahead() may have updated readahead window size so we have to
+     * check there's still something to read.
+     */
+    if (ra->size > index - start)
+        do_page_cache_ra(ractl, ra->size - (index - start),
+                 ra->async_size);
 }
 
 ```
