@@ -139,7 +139,7 @@ If there is no file on-disk backing this memory (e.g. program stack, heap). It c
 
 We'll take a deeper look at reclamation for file-backed memory later on this page.  
 
-- Swapping: When you need to reclaim anon memory, you create a swap space on the disk, where you can place old anon pages temporarily (obviously disk access is very slow, so usually this scenario where a process uses up so much RAM that you need to frequently access the swap space, means you need more RAM).
+- Swapping: When you need to reclaim anon memory, you create a swap space on the disk, where you can place old anon pages temporarily (obviously disk access is very slow, so usually this scenario where a process uses up so much RAM that you need to frequently access the swap space, means you need more RAM). There is a "swap cache", which acts as an intermeditae between the RAM and the swap space on disk, to prevent race conditions and redundant writes. 
 
 - In-Memory filesystems: Sometimes anon memory can present a file-like interface. shm and tmpfs are two “in-memory” filesystems (i.e. they are not actually files stored on disk - these deal exclusively with anon memory - but a file-like interface is provided to anon mem too because it’s super clean and easy)
 
@@ -340,7 +340,18 @@ err:
 }
 
 ```
+### How does this ref thing actually work?
 
+So a page / folio is a metadata structure which the Linux Kernel uses to keep track of physical memory locations. Each page has an associated reference count, which tells us how many functions / data structures are using / storing this page. Whenever a function or data structure does folio_get(folio) --> refcount gets +1 and it's the ref-getter's responsibility to also put the ref when done. As long as refcount > 0, it means SOMEONE is using / taking responsibility for this folio, and this memory location cannot be repurposed.
+
+When the page is first allocated: __folio_alloc_node() wraps around __folio_alloc_node_noprof(), which calls __alloc_pages_noprof() --> the main allocation function. 
+
+Inside this, prep_new_page() is called --> post_alloc_hook() --> set_page_refcounted. 
+This function asserts that the refcount is 0 so far, and then forcefully sets it to 1.
+
+So - a newly allocated page has a refcount of 1 - this is the "existence" refcount. 
+
+In filemap_get_read_batch(), we see that every folio added to the batch, has a reference on it via folio_get. In filemap_read, once the contents of the folios is copied over to the userspace buffer, the function explicitly puts each folio.
 
 ### Appendix 
 
@@ -556,6 +567,145 @@ fallback:
     if (ra->size > index - start)
         do_page_cache_ra(ractl, ra->size - (index - start),
                  ra->async_size);
+}
+
+```
+
+The filemap_add_folio function is the main point where new folios actually get added to the cache, and has several interesting points:
+
+```c
+
+noinline int __filemap_add_folio(struct address_space *mapping,
+       struct folio *folio, pgoff_t index, gfp_t gfp, void **shadowp)
+{
+  // set up the cursor to walk through the i_pages xarray
+   XA_STATE(xas, &mapping->i_pages, index);
+   void *alloced_shadow = NULL;
+   int alloced_order = 0;
+   bool huge;
+   long nr;
+
+// the folio needs to be locked while being added to cache!
+   VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
+// the swap cache is a COMPLETELY different thing, btw
+   VM_BUG_ON_FOLIO(folio_test_swapbacked(folio), folio);
+// folio shouldn't be smaller than the minimum size allowed by this mapping
+   VM_BUG_ON_FOLIO(folio_order(folio) < mapping_min_folio_order(mapping),
+           folio);
+// the xarray state iterator should point to the current mapping
+   mapping_set_update(&xas, mapping);
+
+// check index alignment
+   VM_BUG_ON_FOLIO(index & (folio_nr_pages(folio) - 1), folio);
+// very important - since the page cache supports multi-order (large) folios, we store multiple pointers into
+// i_pages, and xas_set_order lets us do that in one go
+   xas_set_order(&xas, index, folio_order(folio));
+// legacy huge TLB pages
+   huge = folio_test_hugetlb(folio);
+// total number of pages in the folio - this is the number of pointers that will be stored into i_pages 
+// and hence the number of refs that i_pages takes for this folio
+   nr = folio_nr_pages(folio);
+
+// set memory alloc masks to prevent recursion / deadlock
+   gfp &= GFP_RECLAIM_MASK;
+// as noted above: increment this folio's ref count by nr_pages 
+   folio_ref_add(folio, nr);
+   folio->mapping = mapping;
+// reset the index, it may have changed during alignment
+   folio->index = xas.xa_index;
+   for (;;) {
+       int order = -1, split_order = 0;
+       void *entry, *old = NULL;
+
+// while writing into i_pages, disable interrupts
+       xas_lock_irq(&xas);
+       xas_for_each_conflict(&xas, entry) {
+           old = entry;
+          // if there was an actual pointer entry here - something's up! exit
+           if (!xa_is_value(entry)) {
+               xas_set_err(&xas, -EEXIST);
+               goto unlock;
+           }
+           /*
+            * If a larger entry exists,
+            * it will be the first and only entry iterated.
+            */
+           if (order == -1)
+               order = xas_get_order(&xas);
+       }
+
+
+       /* entry may have changed before we re-acquire the lock */
+       if (alloced_order && (old != alloced_shadow || order != alloced_order)) {
+           xas_destroy(&xas);
+           alloced_order = 0;
+       }
+
+// if there was a non-pointer entry: it's a shadow entry
+// first: was the previous entry here a larger folio than we are trying to store now?
+// if so, we need to "split" this slot into smaller ones
+// we CANNOT allocate memory while holding a spinlock! 
+// so, in case we DO need memory allocation, exit and retry
+       if (old) {
+           if (order > 0 && order > folio_order(folio)) {
+               /* How to handle large swap entries? */
+               BUG_ON(shmem_mapping(mapping));
+               if (!alloced_order) {
+                   split_order = order;
+                   goto unlock;
+               }
+               xas_split(&xas, old, order);
+               xas_reset(&xas);
+           }
+           if (shadowp)
+               *shadowp = old;
+       }
+      // now actually store the pointer to the folio
+       xas_store(&xas, folio);
+       if (xas_error(&xas))
+           goto unlock;
+      // increment the number of pages this mapping tracks
+       mapping->nrpages += nr;
+       /* hugetlb pages do not participate in page cache accounting */
+       if (!huge) {
+           __lruvec_stat_mod_folio(folio, NR_FILE_PAGES, nr);
+           if (folio_test_pmd_mappable(folio))
+               __lruvec_stat_mod_folio(folio,
+                       NR_FILE_THPS, nr);
+       }
+
+unlock:
+       xas_unlock_irq(&xas);
+
+
+       /* split needed, alloc here and retry. */
+       if (split_order) {
+           xas_split_alloc(&xas, old, split_order, gfp);
+           if (xas_error(&xas))
+               goto error;
+           alloced_shadow = old;
+           alloced_order = split_order;
+           xas_reset(&xas);
+           continue;
+       }
+
+
+       if (!xas_nomem(&xas, gfp))
+           break;
+   }
+
+
+   if (xas_error(&xas))
+       goto error;
+
+
+   trace_mm_filemap_add_to_page_cache(folio);
+   return 0;
+error:
+   folio->mapping = NULL;
+   /* Leave page->index set: truncation relies upon it */
+   folio_put_refs(folio, nr);
+   return xas_error(&xas);
 }
 
 ```
