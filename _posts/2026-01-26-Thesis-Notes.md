@@ -36,6 +36,10 @@ title: "Thesis Notes"
     left: 0 !important;
   }
 
+  footer {
+    display: none !important;
+  }
+
   #custom-sidebar-toggle {
     position: fixed;
     top: 15px;
