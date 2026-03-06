@@ -361,9 +361,47 @@ Another example is:
 So: when the memory allocation profiling framework was implemented, the original __alloc_pages function was renamed to __alloc_pages_noprof (noprof stands for no profiling). The above macro wraps the function in "alloc_hooks" which does things like: recording the exact file and line number where allocation was requested, and logging memory usage against this "tag" once it succeeds. 
 
 
-### Memory Reclamation 
+### Memory Reclamation
 
-The main reclamation element is kswapd - the Kernel's garbage collector.
+#### Memory Zones
+The Kernel divides RAM into different "zones":
+- ZONE_DMA: The lowest physical memory addresses - mostly for backwards compatibility (as legacy devices had much smaller addressing limits)
+- ZONE_DMA32: Lower 32 Bits (4GB) of memory - for 32-bit peripherals.
+- ZONE_NORMAL
+- ZONE_MOVABLE: pseudo-zone containing memory pages that the kernel knows it can safely move, migrate, or reclaim - mostly for RAM hotplugging
+- ZONE_DEVICE: persistent memory and specialized device-backed memory (e.g. GPUs) - becoming more important for heterogenous computing and ultra-fast storage devices (DAX)
+
+#### Memory Watermarks
+Each memory zone has three "levels" indicating how much free memory it has:
+- HIGH: Plenty of free space, background processes for reclamation (like kswapd) are asleep.
+- LOW: kswapd wakes up when the level drops below this. It starts reclaiming, until the memory is again above HIGH.
+- MIN: Triggers direct reclaim - the process asking for memory is paused and made to reclaim memory first. This happens if kswapd isn't able to keep up with the allocation rate.
+
+#### kswapd
+kswapd is the kernel's background garbage collector. Let's look at how allocation of memory actually happens.
+
+Above, in filemap_get_pages, we saw that all the paths use filemap_alloc_folio to allocate a new folio in memory. This wraps around the filemap_alloc_folio_noprof function, which is defined separately for CONFIG_NUMA and without. 
+However, in all cases, the allocation is done via __folio_alloc_noprof --> __alloc_pages_noprof.
+
+This function, __alloc_pages_noprof, is the MAIN function in the buddy memory allocator. It first tries allocating via:
+
+```c
+page = get_page_from_freelist(alloc_gfp, order, alloc_flags, &ac);
+```
+This function checks if there are enough free pages above the LOW watermark - if yes, returns these. 
+
+If this fails, the __alloc_pages_noprof function calls:
+```c
+page = __alloc_pages_slowpath(alloc_gfp, order, &ac);
+```
+This makes a call to wake_all_kswapds (on NUMA machines, there's a kswapd per node). wake_all_kswapds() iterates through the memory zones being requested and calls wakeup_kswapd() for the appropriate nodes. This finally calls wake_up_interruptible() to actually wake the sleeping thread. 
+
+int kswapd() calls balance_pgdat
+
+
+
+ 
+
 
 
 
