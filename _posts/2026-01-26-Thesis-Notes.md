@@ -398,9 +398,36 @@ This makes a call to wake_all_kswapds (on NUMA machines, there's a kswapd per no
 
 int kswapd() calls balance_pgdat
 
-
-
+#### LRU Lists
+There are separate active and inactive lists for file-backed and anonymous pages plus a common unevictable list. It is common to reclaim file-backed pages before anonymous pages, since the former often need not be written back (while anonymous pages must always be written to swap) and can be easier to get back if need be. In the case of file-backed pages, the kernel maintains "shadow entries" to remember (for a while) the existence of pages that have been reclaimed off the inactive list. If those pages are "refaulted" back in, the kernel knows that it's pushing out useful pages and can make adjustments to try to avoid doing that.
  
+#### Preventing Thrashing 
+Thrashing is when the kernel is continuously evicting pages and then refaulting them back in. The mechanism to prevent this is closely tied to the page cache xarray: the working set and shadow entries.
+
+When the page cache evicts a file-backed page, it stores a “shadow entry” in the i_pages xarray.
+These shadow entries contain: 
+- a bit that tells the xarray “I’m a value entry, and not an actual pointer”
+- a bit that indicates whether the evicted page was part of the working set or not (a hot page or cold page)
+- the NUMA Node ID
+- the memory control group
+- eviction timestamp
+
+Note: the Shrinker for i_pages xarray itself: 
+Suppose a workload is reading / writing massively larger amounts of memory than RAM. Then pages are constantly evicted and shadow entries created. If this workload also prevents the inode from being reclaimed (by keeping for example, the file descriptors open) - then it will create excessive shadow nodes i.e. xarray nodes consisting entirely of shadow entries. For this, the kernel has a "shrinker" mechanism to clean up shadow nodes periodically and not wait for inode reclaim to do so.
+
+A list of shadow nodes is maintained as a global var in workingset.c:
+```c
+struct list_lru shadow_nodes;
+```
+
+The kernel defines a function workingset_update_node() to handle this stuff. This is "attached" to the xarray via xas_set_update(). e.g. both __filemap_add_folio and page_cache_delete call mapping_set_update, which does 
+```c 
+xas_set_update(xas, workingset_update_node);
+```
+
+The xarray structure consists of multiple xa_node, and each xa_node has a private_list member of type list_head, which may be part of the global shadow_nodes list. If it is --> then this node is a valid shadow node. The workingset_update_node() handles all this stuff - adding / removing xa_nodes to the global shadow_nodes list. This function is called by all the functions that change the structure of the xarray: xas_alloc, xas_shrink, xas_delete_node, xas_free_nodes, xas_expand, update_node, xas_split.
+
+
 
 
 
@@ -418,6 +445,19 @@ This function asserts that the refcount is 0 so far, and then forcefully sets it
 So - a newly allocated page has a refcount of 1 - this is the "existence" refcount. 
 
 In filemap_get_read_batch(), we see that every folio added to the batch, has a reference on it via folio_get. In filemap_read, once the contents of the folios is copied over to the userspace buffer, the function explicitly puts each folio.
+
+### Locking in the Linux Kernel
+Why do we need locking at all? Because critical regions need to be properly used if accessed concurrently (race conditions).
+- “spinlock” → try to acquire a lock, keep spinning until you do
+- mutex → can also block until lock is acquired, so the processor can go do other stuff meanwhile
+
+If you have a kernel without SMP, without pre-emption: you don’t need spinlocks at all (because nobody else can run at the same time!)
+
+softirq: software interrupt request, the second half of interrupt processing. They cannot sleep. 
+So, if a critical section may be accessed by a softirq, it must have two conditions on the lock:
+- It cannot be a “sleepable” lock (therefore, must be a spinlock)
+- 
+That’s why we use: spin_lock_bh
 
 ### Appendix 
 
