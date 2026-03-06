@@ -340,6 +340,34 @@ err:
 }
 
 ```
+
+### Side Note: Understanding the Profiling macros 
+
+Consider these kinds of macros:
+
+```c
+#define  __folio_alloc_node(...)        alloc_hooks(__folio_alloc_node_noprof(__VA_ARGS__))
+```
+
+Here, __folio_alloc_node() is a wrapper around __folio_alloc_node_noprof. So at compile time, calls to __folio_alloc_node are redirected to __folio_alloc_node_noprof and all its args are passed to it.
+“alloc_hooks” adds instrumentation logic - it is used for memory allocation profiling. It adds metadata to a memory allocation call, allowing detailed tracking of memory usage back to the actual code that did the allocation.
+
+Another example is:
+
+```c
+#define __alloc_pages(...)			alloc_hooks(__alloc_pages_noprof(__VA_ARGS__))
+```
+
+So: when the memory allocation profiling framework was implemented, the original __alloc_pages function was renamed to __alloc_pages_noprof (noprof stands for no profiling). The above macro wraps the function in "alloc_hooks" which does things like: recording the exact file and line number where allocation was requested, and logging memory usage against this "tag" once it succeeds. 
+
+
+### Memory Reclamation 
+
+The main reclamation element is kswapd - the Kernel's garbage collector.
+
+
+
+
 ### How does this ref thing actually work?
 
 So a page / folio is a metadata structure which the Linux Kernel uses to keep track of physical memory locations. Each page has an associated reference count, which tells us how many functions / data structures are using / storing this page. Whenever a function or data structure does folio_get(folio) --> refcount gets +1 and it's the ref-getter's responsibility to also put the ref when done. As long as refcount > 0, it means SOMEONE is using / taking responsibility for this folio, and this memory location cannot be repurposed.
