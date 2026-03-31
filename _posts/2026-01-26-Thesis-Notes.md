@@ -398,11 +398,35 @@ This makes a call to wake_all_kswapds (on NUMA machines, there's a kswapd per no
 
 int kswapd() calls balance_pgdat
 
-#### LRU Lists
-There are separate active and inactive lists for file-backed and anonymous pages plus a common unevictable list. It is common to reclaim file-backed pages before anonymous pages, since the former often need not be written back (while anonymous pages must always be written to swap) and can be easier to get back if need be. In the case of file-backed pages, the kernel maintains "shadow entries" to remember (for a while) the existence of pages that have been reclaimed off the inactive list. If those pages are "refaulted" back in, the kernel knows that it's pushing out useful pages and can make adjustments to try to avoid doing that.
+#### The classic LRU implementation
+In the classic LRU implementation, there are 5 LRU lists:
+- LRU_ACTIVE_FILE
+- LRU_INACTIVE_FILE
+- LRU_ACTIVE_ANON
+- LRU_INACTIVE_ANON
+- LRU_UNEVICTABLE (not a "real" LRU list, but treated like one)
+
+There are three "shrinker" functions than handle these lists: 
+- shrink_active_list() --> "isolates" folios from the tail of the active list and adds them to the inactive list. The only exception: file-backed pages marked VM_EXEC (executable code) that are mapped into at least one process' page table. This protects against use-once streaming I/O (we ignore anon pages here, as they are not vulnerable to this case, plus JVM may create lots of anon VM_EXEC folios).
+- shrink_inactive_list() --> isolates folios and sends them to shrink_folio_list(). Doesn't really do any "checks" of its own.
+- shrink_folio_list() --> the heavy-lifter. This function does most of the eviction work:
+
+
+How do we decide which list to prune from? 
+get_scan_count() calculates how many pages to scan from each list and stores it. It uses heuristics like:
+- Is there no swap space available or is there plenty of inactive file page cache lying around? Scan only the file lists then. It's preferred to evict file-backed pages before anon as they may be clean and don't have to be written back, while anon pages always must be written to swap.
+- Is the file cache almost depleted? Scan anon. 
+- Are we close to OOM? SCAN. EVERYTHING. 
+- If none of the extreme cases above is met, it uses the "swappiness" fraction and refaulting costs to calculate.
+
+The shrink_lruvec() function then takes these calculations, and if any of the lists have > 0 scannable pages, it routes them to the shrink_(active|inactive)_list functions.
+
+
  
 #### Preventing Thrashing 
 Thrashing is when the kernel is continuously evicting pages and then refaulting them back in. The mechanism to prevent this is closely tied to the page cache xarray: the working set and shadow entries.
+
+In the case of file-backed pages, the kernel maintains "shadow entries" to remember (for a while) the existence of pages that have been reclaimed off the inactive list. If those pages are "refaulted" back in, the kernel knows that it's pushing out useful pages and can make adjustments to try to avoid doing that.
 
 When the page cache evicts a file-backed page, it stores a “shadow entry” in the i_pages xarray.
 These shadow entries contain: 
